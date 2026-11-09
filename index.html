@@ -242,6 +242,17 @@ body.on-login #view-login{inset:0}
 .sumrow .vv{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
 .sumrow:active .nm{color:var(--accent-ink)}
 
+/* ---------- search ---------- */
+.searchbar{display:flex;align-items:center;gap:10px;margin:0 20px 6px;background:var(--card);border-radius:14px;padding:0 14px;height:46px}
+.searchbar input{flex:1;min-width:0;background:none;border:0;outline:none;font-family:inherit;font-size:15px;color:var(--text);padding:0}
+.searchbar input::placeholder{color:var(--dim-2)}
+.searchbar svg{width:18px;height:18px;color:var(--dim);flex:0 0 auto}
+.searchsum{padding:10px 22px 8px;font-size:12.5px;color:var(--dim);font-weight:600}
+.syncpill{display:inline-flex;align-items:center;gap:6px;margin-top:9px;padding:5px 11px;border-radius:20px;background:var(--card);font-size:11.5px;font-weight:700;color:var(--dim)}
+.syncpill .dot{width:7px;height:7px;border-radius:50%;background:var(--dim-2)}
+.syncpill.ok .dot{background:var(--green)}
+.syncpill.warn .dot{background:var(--accent)}
+.syncpill:active{transform:scale(.98)}
 /* ---------- login ---------- */
 .loginwrap{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%;padding:0 26px calc(34px + env(safe-area-inset-bottom))}
 .loginbrand{font-size:12px;font-weight:800;letter-spacing:2.2px;color:var(--accent-ink);text-transform:uppercase}
@@ -462,6 +473,16 @@ body.on-login #view-login{inset:0}
     </div>
     <div class="head left" id="homeHead"></div>
     <div class="body" id="homeBody"></div>
+  </div>
+
+  <div class="view" id="view-search">
+    <div class="head" id="searchHead"></div>
+    <div class="searchbar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+      <input id="searchInput" placeholder="Search a category, note or amount" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="searchsum" id="searchSum"></div>
+    <div class="body" id="searchBody"></div>
   </div>
 
   <div class="view" id="view-history">
@@ -692,6 +713,7 @@ let state = loadState();
    record writes only that record, not the whole file. */
 const DB_NAME = 'mudrapuri', DB_VER = 1;
 let db = null, idbOk = false, bootPending = true;
+let SEED_SIG = null;   /* signature of the demo set the file ships with */
 
 function idbOpen(){
   return new Promise(resolve=>{
@@ -955,6 +977,10 @@ async function adoptRemote(remote){
   persistAll();
   save(true);
 }
+function untouched(){
+  try{ if(SEED_SIG === null) SEED_SIG = sigOf(realData()); }catch(e){ return false; }
+  return sigOf(state.tx) === SEED_SIG;
+}
 function sigOf(list){
   let sum = 0, n = 0;
   for(const t of list){ sum += net(t) * (1 + (t.id ? t.id.length : 0)) + (t.amount||0); n++; }
@@ -990,7 +1016,7 @@ async function githubSignIn(token, repoInput){
     const remote = pulled.payload;
     const localSig = sigOf(state.tx);
     const remoteSig = sigOf(unpackTx(remote.state.tx || []));
-    if(localSig !== remoteSig && state.tx.length){
+    if(localSig !== remoteSig && state.tx.length && !untouched()){
       const upload = await ask('Two copies found',
         `This device has ${state.tx.length} expense${state.tx.length===1?'':'s'}. GitHub has ${(remote.state.tx||[]).length}. Which one should become the master copy?`,
         'Use this device', false, 'Use GitHub');
@@ -1008,13 +1034,32 @@ async function githubSignIn(token, repoInput){
   return me;
 }
 
+let lastPullAt = 0;
+async function syncPull(silent){
+  if(!syncCfg() || GH.busy) return false;
+  if(Date.now() - lastPullAt < 15000) return false;
+  lastPullAt = Date.now();
+  try{
+    const r = await ghPull();
+    if(!r || !r.payload || !r.payload.state) return false;
+    const at = r.payload.updatedAt || 0;
+    if(at > (state.sync.lastSync || 0)){
+      await adoptRemote(r.payload);
+      refresh();
+      if(!silent) toast('Loaded the latest from GitHub');
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+
 async function syncOnBoot(){
   if(!syncCfg()) return;
   try{
     const r = await ghPull();
     if(r && r.payload && r.payload.state){
       const remoteAt = r.payload.updatedAt || 0;
-      if(remoteAt > (state.sync.lastSync || 0)){
+      if(remoteAt > (state.sync.lastSync || 0) || untouched()){
         await adoptRemote(r.payload);
         refresh();
         toast('Loaded your latest data from GitHub');
@@ -1028,6 +1073,12 @@ async function syncOnBoot(){
   }catch(e){
     toast(e.message === 'Token rejected by GitHub' ? 'GitHub token rejected' : 'GitHub sync unavailable right now');
   }
+}
+function openSearch(seed){
+  ui.query = seed || '';
+  go('search');
+  const inp = $('#searchInput');
+  if(inp){ inp.value = ui.query; setTimeout(()=>{ try{ inp.focus(); }catch(e){} }, 220); }
 }
 function openSyncSheet(mode){
   const c = state.sync || {};
@@ -1252,6 +1303,7 @@ const ui = { histFilter:'cycle', anPeriod:'cycle', catFilter:null, search:'', se
 function refresh(){
   if(current==='home') renderHome();
   else if(current==='history') renderHistory();
+  else if(current==='search') renderSearch();
   else if(current==='analytics') renderAnalytics();
   else if(current==='settings') renderSettings();
   else if(current==='add') renderAddAll();
@@ -1334,7 +1386,13 @@ function renderHome(){
       <div class="hi">Mudrapuri</div>
       <div class="big">${esc(greet.big)}</div>
       <div class="tag">${esc(greet.small)}</div>
+      <button class="syncpill ${syncCfg() ? (state.sync.lastSync ? 'ok' : 'warn') : ''}" id="homeSync">
+        <span class="dot"></span>${syncCfg() ? (state.sync.lastSync ? 'Synced ' + whenText(state.sync.lastSync) : 'Not backed up yet') : 'Offline · tap to connect'}
+      </button>
     </div>
+    <button class="side" id="homeSearch" aria-label="Search" style="margin-right:6px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+    </button>
     <button class="side" id="homeGear" aria-label="Settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.11A1.7 1.7 0 0 0 4.6 8.87a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.56V3a2 2 0 1 1 4 0v.11a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 1 1 0 4h-.11a1.7 1.7 0 0 0-1.49 1z"/></svg>
     </button>`;
@@ -1369,6 +1427,13 @@ function renderHome(){
     <div style="height:18px"></div>`;
 
   $('#homeGear').onclick = ()=>go('settings');
+  if($('#homeSearch')) $('#homeSearch').onclick = ()=>openSearch('');
+  if($('#homeSync')) $('#homeSync').onclick = async ()=>{
+    if(!syncCfg()){ openSyncSheet('settings'); return; }
+    toast('Syncing…');
+    try{ const ok = await ghPush(); toast(ok ? 'Backed up to GitHub' : 'Nothing to sync'); renderHome(); }
+    catch(e){ toast('Sync failed: ' + e.message); }
+  };
   $('#heroCard').onclick = ()=>drill('cycle');
   $('#homeAllCats').onclick = ()=>go('settings');
   $('#homeAnalytics').onclick = ()=>{ ui.anPeriod='cycle'; go('analytics'); };
@@ -1440,6 +1505,45 @@ function rowHtml(t, withDelete){
 }
 
 /* ============================== HISTORY ============================== */
+function renderSearch(){
+  $('#searchHead').innerHTML = `
+    <button class="side" id="searchBack" aria-label="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+    </button>
+    <h1>Search</h1>
+    <div class="side" style="visibility:hidden"></div>`;
+  $('#searchBack').onclick = ()=>go('home');
+
+  const q = (ui.query || '').trim().toLowerCase();
+  let hits = [];
+  if(q){
+    hits = state.tx.filter(t=>{
+      const c = catOf(t.cat);
+      const hay = (c.name + ' ' + (t.note||'') + ' ' + t.amount + ' ' + t.date + ' ' + (t.credit?'refund credit':'')).toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  hits.sort((a,b)=> (b.date+b.time).localeCompare(a.date+a.time));
+
+  if(!q){
+    $('#searchSum').textContent = 'Type to search across every expense';
+    $('#searchBody').innerHTML = `<div class="empty" style="padding:40px 30px"><div class="big">🔍</div>Search a category like <b>Bills</b>, or any word from a note like <b>Sony</b>.</div>`;
+    return;
+  }
+  if(!hits.length){
+    $('#searchSum').textContent = 'No matches';
+    $('#searchBody').innerHTML = `<div class="empty"><div class="big">🧾</div>Nothing matches “${esc(q)}”.</div>`;
+    return;
+  }
+  const total = sumNet(hits);
+  $('#searchSum').textContent = hits.length + (hits.length===1?' match':' matches') + ' · ' + signedInr(total);
+  $('#searchBody').innerHTML = `<div class="catlist">${hits.slice(0,200).map(t=>rowHtml(t,false)).join('')}</div>
+    ${hits.length>200?`<div class="pfoot">Showing the first 200 of ${hits.length}</div>`:''}`;
+  $('#searchBody').querySelectorAll('[data-tx]').forEach(el=>{
+    el.onclick = ()=>{ ui.searchReturn = 'search'; editTx(el.dataset.tx, 'search'); };
+  });
+}
+
 function renderHistory(){
   $('#histHead').innerHTML = `
     <div class="side" style="visibility:hidden"></div>
@@ -1796,6 +1900,10 @@ function renderSettings(){
   const cur = CURRENCIES[state.currency] || CURRENCIES.INR;
 
   $('#setBody').innerHTML = `
+    <div class="catlist" style="margin-top:6px">
+      <div class="setrow" id="settingsSearchRow"><div><div class="nm">Search expenses</div><div class="sub">Find any expense by category, note or amount</div></div><button class="go" id="settingsSearch">Search</button></div>
+    </div>
+
     <div class="setlabel">Categories</div>
     <div style="padding:0 22px 10px;font-size:12.5px;color:var(--dim)">Tap a category to edit, drag to reorder.</div>
     <div class="catlist" id="catList">
@@ -1899,6 +2007,10 @@ function renderSettings(){
         <div><div class="nm">Save in this browser</div><div class="sub">${storageBlocked ? 'Blocked by this viewer — use Export' : saving ? 'On · your data stays on this device' : 'Off · nothing is saved, export to keep it'}</div></div>
         <button class="go" id="persistBtn" style="color:${saving?'var(--accent-ink)':'var(--red)'}">${saving?'Turn off':'Turn on'}</button>
       </div>
+      <div class="setrow">
+        <div><div class="nm">Back up to GitHub</div><div class="sub">${syncCfg() ? (state.sync.lastSync ? 'Saved to ' + esc(state.sync.repo) + ' ' + whenText(state.sync.lastSync) : 'Connected · nothing saved yet') : 'Connect GitHub to keep a copy in the cloud'}</div></div>
+        <button class="go" id="ghBackupBtn">${syncCfg() ? 'Back up' : 'Connect'}</button>
+      </div>
       <div class="setrow"><div><div class="nm">Export backup</div><div class="sub">${state.lastExport ? 'Last export · '+state.lastExport : 'No backup taken yet'}</div></div><button class="go" id="exportBtn">JSON</button></div>
       <div class="setrow"><div><div class="nm">Export to CSV</div><div class="sub">Opens in Excel or Sheets</div></div><button class="go" id="csvBtn">CSV</button></div>
       <div class="setrow"><div><div class="nm">Import backup</div><div class="sub">Load a JSON file you exported</div></div><button class="go" id="importBtn">Import</button></div>
@@ -1975,6 +2087,17 @@ function renderSettings(){
     state.accent = b.dataset.sw; applyTheme(); save(); renderSettings(); toast('Accent updated');
   });
   $('#nameInput').onchange = e=>{ state.name = e.target.value.trim() || 'there'; save(); toast('Name saved'); };
+
+  if($('#ghBackupBtn')) $('#ghBackupBtn').onclick = async ()=>{
+    const btn = $('#ghBackupBtn');
+    if(!syncCfg()){ openSyncSheet('settings'); return; }
+    btn.textContent = 'Saving…';
+    try{
+      const ok = await ghPush();
+      toast(ok ? 'Backed up to GitHub' : 'Nothing to back up');
+      renderSettings();
+    }catch(e){ toast('Backup failed: ' + e.message); btn.textContent = 'Back up'; }
+  };
 
   $('#exportBtn').onclick = ()=>{
     downloadFile(new Blob([JSON.stringify(state,null,2)],{type:'application/json'}), 'mudrapuri-backup-'+TODAY_ISO+'.json');
@@ -2254,6 +2377,11 @@ $('#newCatSave').onclick = ()=>{
 };
 
 /* ---------------- boot ---------------- */
+document.addEventListener('click', e=>{
+  const b = e.target.closest && e.target.closest('#settingsSearch');
+  if(b){ e.preventDefault(); openSearch(''); }
+});
+$('#searchInput').addEventListener('input', e=>{ ui.query = e.target.value; renderSearch(); });
 $('#histSearch').addEventListener('input', e=>{ ui.search = e.target.value; renderHistory(); });
 window.addEventListener('beforeunload', e=>{
   if(state.persist === false && state.tx.length){ e.preventDefault(); e.returnValue = ''; }
@@ -2266,7 +2394,11 @@ setInterval(()=>{
   }
   if(document.querySelector('#homeHead .big')) paintGreeting();
 }, 30000);
-document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) paintGreeting(); });
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) return;
+  paintGreeting();
+  if(state.onboarded === true) syncPull(true);
+});
 try{
   const mq = window.matchMedia('(prefers-color-scheme: light)');
   const onScheme = ()=>{ if(state.theme === 'auto'){ applyTheme(); refresh(); } };
